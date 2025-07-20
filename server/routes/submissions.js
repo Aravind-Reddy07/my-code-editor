@@ -5,23 +5,27 @@ const User = require('../models/User');
 const { auth } = require('../middleware/auth');
 const { executeCode } = require('../services/codeExecution');
 const { checkAchievements } = require('../services/achievementService');
+const { validationRules, validate } = require('../utils/validation');
+const ApiResponse = require('../utils/response');
 
 const router = express.Router();
 
 // @route   POST /api/submissions
 // @desc    Submit code for a problem
 // @access  Private
-router.post('/', auth, async (req, res) => {
+router.post('/', [
+  auth,
+  validationRules.problemId,
+  validationRules.code,
+  validationRules.language,
+  validate
+], async (req, res) => {
   try {
     const { problemId, code, language } = req.body;
 
-    if (!problemId || !code || !language) {
-      return res.status(400).json({ message: 'Problem ID, code, and language are required' });
-    }
-
     const problem = await Problem.findById(problemId);
     if (!problem) {
-      return res.status(404).json({ message: 'Problem not found' });
+      return ApiResponse.notFound(res, 'Problem not found');
     }
 
     // Create submission
@@ -110,8 +114,10 @@ router.post('/', auth, async (req, res) => {
 
       await user.save();
 
-      res.json({
-        message: 'Code submitted successfully',
+      // Filter out hidden test case results for response
+      const visibleTestCaseResults = submission.testCaseResults.filter(tcr => !tcr.isHidden);
+
+      ApiResponse.success(res, {
         submission: {
           id: submission._id,
           status: submission.status,
@@ -119,10 +125,10 @@ router.post('/', auth, async (req, res) => {
           memory: submission.memory,
           passedTestCases: submission.passedTestCases,
           totalTestCases: submission.totalTestCases,
-          testCaseResults: submission.testCaseResults.filter(tcr => !tcr.isHidden),
+          testCaseResults: visibleTestCaseResults,
           errorMessage: submission.errorMessage
         }
-      });
+      }, 'Code submitted successfully');
 
     } catch (executionError) {
       console.error('Code execution error:', executionError);
@@ -131,36 +137,37 @@ router.post('/', auth, async (req, res) => {
       submission.errorMessage = executionError.message;
       await submission.save();
 
-      res.json({
-        message: 'Code execution failed',
+      ApiResponse.success(res, {
         submission: {
           id: submission._id,
           status: submission.status,
           errorMessage: submission.errorMessage
         }
-      });
+      }, 'Code execution failed');
     }
 
   } catch (error) {
     console.error('Submit code error:', error);
-    res.status(500).json({ message: 'Server error' });
+    ApiResponse.error(res, 'Failed to submit code');
   }
 });
 
 // @route   POST /api/submissions/run
 // @desc    Run code against sample test cases
 // @access  Private
-router.post('/run', auth, async (req, res) => {
+router.post('/run', [
+  auth,
+  validationRules.problemId,
+  validationRules.code,
+  validationRules.language,
+  validate
+], async (req, res) => {
   try {
     const { problemId, code, language } = req.body;
 
-    if (!problemId || !code || !language) {
-      return res.status(400).json({ message: 'Problem ID, code, and language are required' });
-    }
-
     const problem = await Problem.findById(problemId);
     if (!problem) {
-      return res.status(404).json({ message: 'Problem not found' });
+      return ApiResponse.notFound(res, 'Problem not found');
     }
 
     // Get only sample test cases (first 3 or non-hidden ones)
@@ -171,8 +178,7 @@ router.post('/run', auth, async (req, res) => {
     // Execute code
     const executionResult = await executeCode(code, language, sampleTestCases);
 
-    res.json({
-      message: 'Code executed successfully',
+    ApiResponse.success(res, {
       result: {
         status: executionResult.status,
         runtime: executionResult.runtime,
@@ -182,11 +188,11 @@ router.post('/run', auth, async (req, res) => {
         totalTestCases: executionResult.totalTestCases,
         errorMessage: executionResult.errorMessage
       }
-    });
+    }, 'Code executed successfully');
 
   } catch (error) {
     console.error('Run code error:', error);
-    res.status(500).json({ message: 'Server error' });
+    ApiResponse.error(res, 'Failed to execute code');
   }
 });
 
@@ -210,7 +216,7 @@ router.get('/', auth, async (req, res) => {
 
     const total = await Submission.countDocuments(query);
 
-    res.json({
+    ApiResponse.success(res, {
       submissions,
       pagination: {
         current: parseInt(page),
@@ -218,9 +224,10 @@ router.get('/', auth, async (req, res) => {
         total
       }
     });
+
   } catch (error) {
     console.error('Get submissions error:', error);
-    res.status(500).json({ message: 'Server error' });
+    ApiResponse.error(res, 'Failed to fetch submissions');
   }
 });
 
@@ -235,13 +242,50 @@ router.get('/:id', auth, async (req, res) => {
     }).populate('problemId', 'title slug difficulty');
 
     if (!submission) {
-      return res.status(404).json({ message: 'Submission not found' });
+      return ApiResponse.notFound(res, 'Submission not found');
     }
 
-    res.json({ submission });
+    ApiResponse.success(res, { submission });
+
   } catch (error) {
     console.error('Get submission error:', error);
-    res.status(500).json({ message: 'Server error' });
+    ApiResponse.error(res, 'Failed to fetch submission');
+  }
+});
+
+// @route   GET /api/submissions/problem/:problemId
+// @desc    Get submissions for a specific problem
+// @access  Private
+router.get('/problem/:problemId', auth, async (req, res) => {
+  try {
+    const { problemId } = req.params;
+    const { page = 1, limit = 10 } = req.query;
+
+    const submissions = await Submission.find({
+      userId: req.user.id,
+      problemId
+    })
+    .sort({ createdAt: -1 })
+    .limit(limit * 1)
+    .skip((page - 1) * limit);
+
+    const total = await Submission.countDocuments({
+      userId: req.user.id,
+      problemId
+    });
+
+    ApiResponse.success(res, {
+      submissions,
+      pagination: {
+        current: parseInt(page),
+        pages: Math.ceil(total / limit),
+        total
+      }
+    });
+
+  } catch (error) {
+    console.error('Get problem submissions error:', error);
+    ApiResponse.error(res, 'Failed to fetch problem submissions');
   }
 });
 

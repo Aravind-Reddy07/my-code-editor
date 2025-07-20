@@ -1,8 +1,9 @@
 const express = require('express');
 const jwt = require('jsonwebtoken');
-const { body, validationResult } = require('express-validator');
 const User = require('../models/User');
 const { auth } = require('../middleware/auth');
+const { validationRules, validate } = require('../utils/validation');
+const ApiResponse = require('../utils/response');
 
 const router = express.Router();
 
@@ -17,25 +18,18 @@ const generateToken = (userId) => {
 // @desc    Register user
 // @access  Public
 router.post('/register', [
-  body('name').trim().isLength({ min: 2, max: 50 }).withMessage('Name must be between 2 and 50 characters'),
-  body('email').isEmail().normalizeEmail().withMessage('Please enter a valid email'),
-  body('password').isLength({ min: 6 }).withMessage('Password must be at least 6 characters long')
+  validationRules.name,
+  validationRules.email,
+  validationRules.password,
+  validate
 ], async (req, res) => {
   try {
-    const errors = validationResult(req);
-    if (!errors.isEmpty()) {
-      return res.status(400).json({ 
-        message: 'Validation failed', 
-        errors: errors.array() 
-      });
-    }
-
     const { name, email, password } = req.body;
 
     // Check if user already exists
     const existingUser = await User.findOne({ email });
     if (existingUser) {
-      return res.status(400).json({ message: 'User already exists with this email' });
+      return ApiResponse.error(res, 'User already exists with this email', 400);
     }
 
     // Create new user
@@ -50,8 +44,7 @@ router.post('/register', [
     // Generate token
     const token = generateToken(user._id);
 
-    res.status(201).json({
-      message: 'User registered successfully',
+    ApiResponse.success(res, {
       token,
       user: {
         id: user._id,
@@ -61,10 +54,11 @@ router.post('/register', [
         stats: user.stats,
         settings: user.settings
       }
-    });
+    }, 'User registered successfully', 201);
+
   } catch (error) {
     console.error('Registration error:', error);
-    res.status(500).json({ message: 'Server error during registration' });
+    ApiResponse.error(res, 'Server error during registration');
   }
 });
 
@@ -72,30 +66,23 @@ router.post('/register', [
 // @desc    Login user
 // @access  Public
 router.post('/login', [
-  body('email').isEmail().normalizeEmail().withMessage('Please enter a valid email'),
-  body('password').exists().withMessage('Password is required')
+  validationRules.email,
+  body('password').exists().withMessage('Password is required'),
+  validate
 ], async (req, res) => {
   try {
-    const errors = validationResult(req);
-    if (!errors.isEmpty()) {
-      return res.status(400).json({ 
-        message: 'Validation failed', 
-        errors: errors.array() 
-      });
-    }
-
     const { email, password } = req.body;
 
     // Find user and include password for comparison
     const user = await User.findOne({ email }).select('+password');
     if (!user) {
-      return res.status(400).json({ message: 'Invalid credentials' });
+      return ApiResponse.unauthorized(res, 'Invalid credentials');
     }
 
     // Check password
     const isMatch = await user.comparePassword(password);
     if (!isMatch) {
-      return res.status(400).json({ message: 'Invalid credentials' });
+      return ApiResponse.unauthorized(res, 'Invalid credentials');
     }
 
     // Update last active
@@ -105,8 +92,7 @@ router.post('/login', [
     // Generate token
     const token = generateToken(user._id);
 
-    res.json({
-      message: 'Login successful',
+    ApiResponse.success(res, {
       token,
       user: {
         id: user._id,
@@ -117,10 +103,11 @@ router.post('/login', [
         settings: user.settings,
         selectedTopics: user.selectedTopics
       }
-    });
+    }, 'Login successful');
+
   } catch (error) {
     console.error('Login error:', error);
-    res.status(500).json({ message: 'Server error during login' });
+    ApiResponse.error(res, 'Server error during login');
   }
 });
 
@@ -133,7 +120,7 @@ router.get('/me', auth, async (req, res) => {
       .populate('achievements.achievementId')
       .populate('solvedProblems.problemId', 'title difficulty');
 
-    res.json({
+    ApiResponse.success(res, {
       user: {
         id: user._id,
         name: user.name,
@@ -147,9 +134,10 @@ router.get('/me', auth, async (req, res) => {
         acceptanceRate: user.acceptanceRate
       }
     });
+
   } catch (error) {
     console.error('Get user error:', error);
-    res.status(500).json({ message: 'Server error' });
+    ApiResponse.error(res, 'Server error');
   }
 });
 
@@ -157,7 +145,20 @@ router.get('/me', auth, async (req, res) => {
 // @desc    Logout user (client-side token removal)
 // @access  Private
 router.post('/logout', auth, (req, res) => {
-  res.json({ message: 'Logged out successfully' });
+  ApiResponse.success(res, null, 'Logged out successfully');
+});
+
+// @route   POST /api/auth/refresh
+// @desc    Refresh JWT token
+// @access  Private
+router.post('/refresh', auth, async (req, res) => {
+  try {
+    const token = generateToken(req.user.id);
+    ApiResponse.success(res, { token }, 'Token refreshed successfully');
+  } catch (error) {
+    console.error('Token refresh error:', error);
+    ApiResponse.error(res, 'Failed to refresh token');
+  }
 });
 
 module.exports = router;
