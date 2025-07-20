@@ -13,43 +13,58 @@ const submissionSchema = new mongoose.Schema({
   },
   code: {
     type: String,
-    required: [true, 'Code is required']
+    required: true
   },
   language: {
     type: String,
     required: true,
-    enum: ['javascript', 'python', 'java', 'cpp', 'typescript']
+    enum: ['javascript', 'python', 'typescript', 'java', 'cpp']
   },
   status: {
     type: String,
     required: true,
-    enum: ['Accepted', 'Wrong Answer', 'Time Limit Exceeded', 'Memory Limit Exceeded', 'Runtime Error', 'Compile Error', 'Pending']
+    enum: [
+      'Accepted',
+      'Wrong Answer',
+      'Time Limit Exceeded',
+      'Memory Limit Exceeded',
+      'Runtime Error',
+      'Compilation Error',
+      'Internal Error'
+    ]
   },
-  runtime: {
+  executionTime: {
     type: Number, // in milliseconds
-    default: null
+    default: 0
   },
-  memory: {
-    type: Number, // in MB
-    default: null
+  memoryUsed: {
+    type: Number, // in bytes
+    default: 0
   },
-  testCaseResults: [{
-    testCaseId: String,
-    status: { type: String, enum: ['passed', 'failed', 'error'] },
-    input: String,
-    expectedOutput: String,
-    actualOutput: String,
-    runtime: Number,
-    memory: Number,
-    errorMessage: String
+  testResults: [{
+    testCaseIndex: Number,
+    passed: Boolean,
+    input: mongoose.Schema.Types.Mixed,
+    expected: mongoose.Schema.Types.Mixed,
+    actual: mongoose.Schema.Types.Mixed,
+    executionTime: Number,
+    error: String
   }],
-  errorMessage: String,
-  passedTestCases: { type: Number, default: 0 },
-  totalTestCases: { type: Number, default: 0 },
-  isPublic: { type: Boolean, default: false },
-  notes: String
-}, {
-  timestamps: true
+  error: {
+    message: String,
+    line: Number,
+    column: Number,
+    stack: String
+  },
+  notes: String,
+  isPublic: {
+    type: Boolean,
+    default: false
+  },
+  createdAt: {
+    type: Date,
+    default: Date.now
+  }
 });
 
 // Indexes for better query performance

@@ -3,13 +3,11 @@ const mongoose = require('mongoose');
 const problemSchema = new mongoose.Schema({
   title: {
     type: String,
-    required: [true, 'Problem title is required'],
-    trim: true,
-    maxlength: [100, 'Title cannot exceed 100 characters']
+    required: true,
+    trim: true
   },
   slug: {
     type: String,
-    required: true,
     unique: true,
     lowercase: true
   },
@@ -20,80 +18,125 @@ const problemSchema = new mongoose.Schema({
   },
   description: {
     type: String,
-    required: [true, 'Problem description is required']
+    required: true
   },
   examples: [{
-    input: { type: String, required: true },
-    output: { type: String, required: true },
+    input: String,
+    output: String,
     explanation: String
   }],
   constraints: [String],
-  tags: [{
-    type: String,
-    enum: ['arrays', 'strings', 'linked-lists', 'stacks-queues', 'trees', 'graphs', 'dynamic-programming', 'sliding-window', 'two-pointers', 'hash-table', 'sorting', 'binary-search', 'backtracking', 'greedy', 'math', 'bit-manipulation']
-  }],
-  companies: [String],
+  topics: [String],
   hints: [String],
-  testCases: [{
-    input: { type: String, required: true },
-    expectedOutput: { type: String, required: true },
-    isHidden: { type: Boolean, default: false }
-  }],
+  testCases: {
+    visible: [{
+      input: mongoose.Schema.Types.Mixed,
+      expectedOutput: mongoose.Schema.Types.Mixed,
+      explanation: String
+    }],
+    hidden: [{
+      input: mongoose.Schema.Types.Mixed,
+      expectedOutput: mongoose.Schema.Types.Mixed
+    }]
+  },
   codeTemplates: {
     javascript: String,
     python: String,
+    typescript: String,
     java: String,
-    cpp: String,
-    typescript: String
+    cpp: String
   },
   solution: {
+    javascript: String,
+    python: String,
+    typescript: String,
+    java: String,
+    cpp: String
+  },
+  editorial: {
     approach: String,
-    timeComplexity: String,
-    spaceComplexity: String,
+    complexity: {
+      time: String,
+      space: String
+    },
     code: {
       javascript: String,
       python: String,
+      typescript: String,
       java: String,
-      cpp: String,
-      typescript: String
+      cpp: String
     }
   },
   stats: {
-    totalSubmissions: { type: Number, default: 0 },
-    acceptedSubmissions: { type: Number, default: 0 },
-    acceptanceRate: { type: Number, default: 0 },
-    averageRuntime: { type: Number, default: 0 },
-    averageMemory: { type: Number, default: 0 }
+    totalSubmissions: {
+      type: Number,
+      default: 0
+    },
+    acceptedSubmissions: {
+      type: Number,
+      default: 0
+    },
+    acceptanceRate: {
+      type: Number,
+      default: 0
+    },
+    likes: {
+      type: Number,
+      default: 0
+    },
+    dislikes: {
+      type: Number,
+      default: 0
+    }
   },
-  isActive: { type: Boolean, default: true },
-  createdBy: { type: mongoose.Schema.Types.ObjectId, ref: 'User' },
-  order: { type: Number, default: 0 }
-}, {
-  timestamps: true
-});
-
-// Indexes for better query performance
-problemSchema.index({ difficulty: 1, tags: 1 });
-problemSchema.index({ slug: 1 });
-problemSchema.index({ isActive: 1, order: 1 });
-
-// Update acceptance rate before saving
-problemSchema.pre('save', function(next) {
-  if (this.stats.totalSubmissions > 0) {
-    this.stats.acceptanceRate = ((this.stats.acceptedSubmissions / this.stats.totalSubmissions) * 100).toFixed(1);
+  source: {
+    platform: String, // 'leetcode', 'codeforces', 'custom', etc.
+    originalId: String,
+    url: String
+  },
+  isActive: {
+    type: Boolean,
+    default: true
+  },
+  createdBy: {
+    type: mongoose.Schema.Types.ObjectId,
+    ref: 'User'
+  },
+  createdAt: {
+    type: Date,
+    default: Date.now
+  },
+  updatedAt: {
+    type: Date,
+    default: Date.now
   }
-  next();
 });
 
-// Generate slug from title
+// Generate slug from title before saving
 problemSchema.pre('save', function(next) {
   if (this.isModified('title') && !this.slug) {
     this.slug = this.title
       .toLowerCase()
-      .replace(/[^a-zA-Z0-9\s]/g, '')
-      .replace(/\s+/g, '-');
+      .replace(/[^a-z0-9]+/g, '-')
+      .replace(/(^-|-$)/g, '');
+  }
+  this.updatedAt = Date.now();
+  next();
+});
+
+// Calculate acceptance rate before saving
+problemSchema.pre('save', function(next) {
+  if (this.stats.totalSubmissions > 0) {
+    this.stats.acceptanceRate = (this.stats.acceptedSubmissions / this.stats.totalSubmissions * 100).toFixed(2);
   }
   next();
 });
+
+// Indexes for better query performance
+problemSchema.index({ difficulty: 1 });
+problemSchema.index({ topics: 1 });
+problemSchema.index({ slug: 1 });
+problemSchema.index({ 'stats.acceptanceRate': -1 });
+problemSchema.index({ createdAt: -1 });
 
 module.exports = mongoose.model('Problem', problemSchema);

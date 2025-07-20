@@ -1,38 +1,31 @@
 {
   "name": "codemaster-backend",
   "version": "1.0.0",
-  "description": "Backend for CodeMaster - LeetCode-style coding platform",
+  "description": "Backend for CodeMaster - DSA Learning Platform",
   "main": "server.js",
   "scripts": {
     "start": "node server.js",
     "dev": "nodemon server.js",
     "seed": "node scripts/seedProblems.js",
     "fetch-leetcode": "node scripts/fetchLeetCodeProblems.js",
-    "fetch-apis": "node scripts/fetchFromAPIs.js",
-    "test": "jest"
+    "fetch-apis": "node scripts/fetchFromAPIs.js"
   },
+  "keywords": ["dsa", "coding", "education", "api"],
+  "author": "",
+  "license": "MIT",
   "dependencies": {
     "express": "^4.18.2",
-    "mongoose": "^7.5.0",
+    "mongoose": "^8.0.0",
     "bcryptjs": "^2.4.3",
     "jsonwebtoken": "^9.0.2",
     "cors": "^2.8.5",
-    "dotenv": "^16.3.1",
-    "express-rate-limit": "^6.10.0",
-    "helmet": "^7.0.0",
+    "helmet": "^7.1.0",
+    "express-rate-limit": "^7.1.5",
     "express-validator": "^7.0.1",
-    "multer": "^1.4.5-lts.1",
-    "nodemailer": "^6.9.4",
-    "uuid": "^9.0.0",
     "vm2": "^3.9.19",
-    "axios": "^1.5.0"
+    "dotenv": "^16.3.1"
   },
   "devDependencies": {
-    "nodemon": "^3.0.1",
-    "jest": "^29.6.2",
-    "supertest": "^6.3.3"
-  },
-  "keywords": ["coding", "leetcode", "algorithms", "backend"],
-  "author": "CodeMaster Team",
-  "license": "MIT"
+    "nodemon": "^3.0.1"
+  }
 }

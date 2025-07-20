@@ -1,291 +1,182 @@
 const express = require('express');
+const rateLimit = require('express-rate-limit');
+const { body, validationResult } = require('express-validator');
 const Submission = require('../models/Submission');
 const Problem = require('../models/Problem');
-const User = require('../models/User');
-const { auth } = require('../middleware/auth');
+const auth = require('../middleware/auth');
 const { executeCode } = require('../services/codeExecution');
-const { checkAchievements } = require('../services/achievementService');
-const { validationRules, validate } = require('../utils/validation');
-const ApiResponse = require('../utils/response');
+const { successResponse, errorResponse } = require('../utils/response');
 
 const router = express.Router();
 
-// @route   POST /api/submissions
-// @desc    Submit code for a problem
-// @access  Private
-router.post('/', [
-  auth,
-  validationRules.problemId,
-  validationRules.code,
-  validationRules.language,
-  validate
+// Rate limiting for code execution
+const codeExecutionLimiter = rateLimit({
+  windowMs: 60 * 1000, // 1 minute
+  max: parseInt(process.env.CODE_EXECUTION_RATE_LIMIT) || 10,
+  message: 'Too many code execution requests, please try again later.',
+  standardHeaders: true,
+  legacyHeaders: false,
+});
+
+// Submit and execute code
+router.post('/execute', auth, codeExecutionLimiter, [
+  body('problemId').isMongoId().withMessage('Invalid problem ID'),
+  body('code').notEmpty().withMessage('Code is required'),
+  body('language').isIn(['javascript', 'python', 'typescript']).withMessage('Invalid language')
 ], async (req, res) => {
   try {
-    const { problemId, code, language } = req.body;
-
-    const problem = await Problem.findById(problemId);
-    if (!problem) {
-      return ApiResponse.notFound(res, 'Problem not found');
+    const errors = validationResult(req);
+    if (!errors.isEmpty()) {
+      return errorResponse(res, 'Validation failed', 400, errors.array());
     }
 
-    // Create submission
+    const { problemId, code, language } = req.body;
+    const userId = req.user.userId;
+
+    // Get problem with test cases
+    const problem = await Problem.findById(problemId);
+    if (!problem) {
+      return errorResponse(res, 'Problem not found', 404);
+    }
+
+    // Execute code against test cases
+    const executionResult = await executeCode(code, language, problem.testCases);
+
+    // Create submission record
     const submission = new Submission({
-      userId: req.user.id,
+      userId,
       problemId,
       code,
       language,
-      status: 'Pending'
+      status: executionResult.status,
+      executionTime: executionResult.executionTime,
+      memoryUsed: executionResult.memoryUsed,
+      testResults: executionResult.testResults,
+      error: executionResult.error
     });
 
     await submission.save();
 
-    // Execute code against test cases
-    try {
-      const executionResult = await executeCode(code, language, problem.testCases);
-      
-      // Update submission with results
-      submission.status = executionResult.status;
-      submission.runtime = executionResult.runtime;
-      submission.memory = executionResult.memory;
-      submission.testCaseResults = executionResult.testCaseResults;
-      submission.passedTestCases = executionResult.passedTestCases;
-      submission.totalTestCases = executionResult.totalTestCases;
-      submission.errorMessage = executionResult.errorMessage;
-
-      await submission.save();
-
-      // Update problem stats
-      problem.stats.totalSubmissions += 1;
-      if (executionResult.status === 'Accepted') {
-        problem.stats.acceptedSubmissions += 1;
-      }
-      await problem.save();
-
-      // Update user stats
-      const user = await User.findById(req.user.id);
-      user.stats.totalSubmissions += 1;
-
-      if (executionResult.status === 'Accepted') {
-        user.stats.acceptedSubmissions += 1;
-        
-        // Check if this is the first time solving this problem
-        const alreadySolved = user.solvedProblems.some(
-          sp => sp.problemId.toString() === problemId
-        );
-
-        if (!alreadySolved) {
-          user.stats.problemsSolved += 1;
-          user.solvedProblems.push({
-            problemId,
-            difficulty: problem.difficulty,
-            language,
-            runtime: executionResult.runtime,
-            memory: executionResult.memory
-          });
-
-          // Update streak
-          user.updateStreak();
-
-          // Update streak data
-          const today = new Date();
-          today.setHours(0, 0, 0, 0);
-          
-          const todayStreak = user.streakData.find(
-            data => data.date.toDateString() === today.toDateString()
-          );
-
-          if (todayStreak) {
-            todayStreak.problemsSolved += 1;
-          } else {
-            user.streakData.push({
-              date: today,
-              problemsSolved: 1
-            });
-          }
-
-          // Add points based on difficulty
-          const points = { Easy: 10, Medium: 20, Hard: 30 };
-          user.stats.points += points[problem.difficulty] || 10;
-
-          // Check for achievements
-          await checkAchievements(user);
-        }
-      }
-
-      await user.save();
-
-      // Filter out hidden test case results for response
-      const visibleTestCaseResults = submission.testCaseResults.filter(tcr => !tcr.isHidden);
-
-      ApiResponse.success(res, {
-        submission: {
-          id: submission._id,
-          status: submission.status,
-          runtime: submission.runtime,
-          memory: submission.memory,
-          passedTestCases: submission.passedTestCases,
-          totalTestCases: submission.totalTestCases,
-          testCaseResults: visibleTestCaseResults,
-          errorMessage: submission.errorMessage
-        }
-      }, 'Code submitted successfully');
-
-    } catch (executionError) {
-      console.error('Code execution error:', executionError);
-      
-      submission.status = 'Runtime Error';
-      submission.errorMessage = executionError.message;
-      await submission.save();
-
-      ApiResponse.success(res, {
-        submission: {
-          id: submission._id,
-          status: submission.status,
-          errorMessage: submission.errorMessage
-        }
-      }, 'Code execution failed');
+    // Update problem statistics if accepted
+    if (executionResult.status === 'Accepted') {
+      await Problem.findByIdAndUpdate(problemId, {
+        $inc: { acceptedSubmissions: 1 }
+      });
     }
 
+    await Problem.findByIdAndUpdate(problemId, {
+      $inc: { totalSubmissions: 1 }
+    });
+
+    successResponse(res, 'Code executed successfully', {
+      submissionId: submission._id,
+      status: executionResult.status,
+      executionTime: executionResult.executionTime,
+      memoryUsed: executionResult.memoryUsed,
+      testResults: executionResult.testResults.map(result => ({
+        passed: result.passed,
+        input: result.input,
+        expected: result.expected,
+        actual: result.actual,
+        error: result.error
+      })),
+      error: executionResult.error
+    });
+
   } catch (error) {
-    console.error('Submit code error:', error);
-    ApiResponse.error(res, 'Failed to submit code');
+    console.error('Code execution error:', error);
+    errorResponse(res, 'Code execution failed', 500);
   }
 });
 
-// @route   POST /api/submissions/run
-// @desc    Run code against sample test cases
-// @access  Private
-router.post('/run', [
-  auth,
-  validationRules.problemId,
-  validationRules.code,
-  validationRules.language,
-  validate
-], async (req, res) => {
+// Get user submissions
+router.get('/user/:userId?', auth, async (req, res) => {
   try {
-    const { problemId, code, language } = req.body;
-
-    const problem = await Problem.findById(problemId);
-    if (!problem) {
-      return ApiResponse.notFound(res, 'Problem not found');
+    const userId = req.params.userId || req.user.userId;
+    
+    // Users can only view their own submissions unless admin
+    if (userId !== req.user.userId) {
+      return errorResponse(res, 'Unauthorized', 403);
     }
 
-    // Get only sample test cases (first 3 or non-hidden ones)
-    const sampleTestCases = problem.testCases
-      .filter(tc => !tc.isHidden)
-      .slice(0, 3);
+    const page = parseInt(req.query.page) || 1;
+    const limit = parseInt(req.query.limit) || 20;
+    const skip = (page - 1) * limit;
 
-    // Execute code
-    const executionResult = await executeCode(code, language, sampleTestCases);
-
-    ApiResponse.success(res, {
-      result: {
-        status: executionResult.status,
-        runtime: executionResult.runtime,
-        memory: executionResult.memory,
-        testCaseResults: executionResult.testCaseResults,
-        passedTestCases: executionResult.passedTestCases,
-        totalTestCases: executionResult.totalTestCases,
-        errorMessage: executionResult.errorMessage
-      }
-    }, 'Code executed successfully');
-
-  } catch (error) {
-    console.error('Run code error:', error);
-    ApiResponse.error(res, 'Failed to execute code');
-  }
-});
-
-// @route   GET /api/submissions
-// @desc    Get user submissions
-// @access  Private
-router.get('/', auth, async (req, res) => {
-  try {
-    const { page = 1, limit = 20, problemId, status } = req.query;
-    
-    const query = { userId: req.user.id };
-    
-    if (problemId) query.problemId = problemId;
-    if (status) query.status = status;
-
-    const submissions = await Submission.find(query)
-      .populate('problemId', 'title slug difficulty')
+    const submissions = await Submission.find({ userId })
+      .populate('problemId', 'title difficulty')
       .sort({ createdAt: -1 })
-      .limit(limit * 1)
-      .skip((page - 1) * limit);
+      .skip(skip)
+      .limit(limit)
+      .select('-code'); // Exclude code for list view
 
-    const total = await Submission.countDocuments(query);
+    const total = await Submission.countDocuments({ userId });
 
-    ApiResponse.success(res, {
+    successResponse(res, 'Submissions retrieved successfully', {
       submissions,
       pagination: {
-        current: parseInt(page),
+        current: page,
         pages: Math.ceil(total / limit),
         total
       }
     });
-
   } catch (error) {
     console.error('Get submissions error:', error);
-    ApiResponse.error(res, 'Failed to fetch submissions');
+    errorResponse(res, 'Server error', 500);
   }
 });
 
-// @route   GET /api/submissions/:id
-// @desc    Get single submission
-// @access  Private
+// Get specific submission
 router.get('/:id', auth, async (req, res) => {
   try {
-    const submission = await Submission.findOne({
-      _id: req.params.id,
-      userId: req.user.id
-    }).populate('problemId', 'title slug difficulty');
+    const submission = await Submission.findById(req.params.id)
+      .populate('problemId', 'title difficulty')
+      .populate('userId', 'username');
 
     if (!submission) {
-      return ApiResponse.notFound(res, 'Submission not found');
+      return errorResponse(res, 'Submission not found', 404);
     }
 
-    ApiResponse.success(res, { submission });
+    // Users can only view their own submissions
+    if (submission.userId._id.toString() !== req.user.userId) {
+      return errorResponse(res, 'Unauthorized', 403);
+    }
 
+    successResponse(res, 'Submission retrieved successfully', { submission });
   } catch (error) {
     console.error('Get submission error:', error);
-    ApiResponse.error(res, 'Failed to fetch submission');
+    errorResponse(res, 'Server error', 500);
   }
 });
 
-// @route   GET /api/submissions/problem/:problemId
-// @desc    Get submissions for a specific problem
-// @access  Private
-router.get('/problem/:problemId', auth, async (req, res) => {
+// Get problem submissions (for problem statistics)
+router.get('/problem/:problemId', async (req, res) => {
   try {
     const { problemId } = req.params;
-    const { page = 1, limit = 10 } = req.query;
-
-    const submissions = await Submission.find({
-      userId: req.user.id,
-      problemId
-    })
-    .sort({ createdAt: -1 })
-    .limit(limit * 1)
-    .skip((page - 1) * limit);
-
-    const total = await Submission.countDocuments({
-      userId: req.user.id,
-      problemId
-    });
-
-    ApiResponse.success(res, {
-      submissions,
-      pagination: {
-        current: parseInt(page),
-        pages: Math.ceil(total / limit),
-        total
+    
+    const stats = await Submission.aggregate([
+      { $match: { problemId: mongoose.Types.ObjectId(problemId) } },
+      {
+        $group: {
+          _id: '$status',
+          count: { $sum: 1 }
+        }
       }
-    });
+    ]);
 
+    const totalSubmissions = await Submission.countDocuments({ problemId });
+    const acceptedSubmissions = stats.find(s => s._id === 'Accepted')?.count || 0;
+    const acceptanceRate = totalSubmissions > 0 ? (acceptedSubmissions / totalSubmissions * 100).toFixed(2) : 0;
+
+    successResponse(res, 'Problem submission statistics retrieved', {
+      totalSubmissions,
+      acceptedSubmissions,
+      acceptanceRate: parseFloat(acceptanceRate),
+      statusBreakdown: stats
+    });
   } catch (error) {
     console.error('Get problem submissions error:', error);
-    ApiResponse.error(res, 'Failed to fetch problem submissions');
+    errorResponse(res, 'Server error', 500);
   }
 });
 
